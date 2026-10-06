@@ -26,8 +26,17 @@ def _clean(q: str) -> str:
     return t
 
 
-def build_html(df, report_title, summary, cat_cols, filters_text, group=None, chosen=None) -> bytes:
+ALL_SECTIONS = ["summary", "notes", "profile", "yesno", "compare"]
+
+
+def build_html(df, report_title, summary, cat_cols, filters_text, group=None, chosen=None,
+               notes=None, sections=None) -> bytes:
+    secs = list(sections or ALL_SECTIONS)
+    label_of = dict(zip(summary["Original"], summary["Question"])) if "Original" in summary else {}
     data = {
+        "sections": secs,
+        "notes": {"findings": list((notes or {}).get("findings") or []),
+                  "recommendations": list((notes or {}).get("recommendations") or [])},
         "title": report_title,
         "filters": filters_text,
         "n": int(len(df)),
@@ -39,8 +48,7 @@ def build_html(df, report_title, summary, cat_cols, filters_text, group=None, ch
             for c in cat_cols[:6]
         ],
         "questions": [
-            {"q": _clean(r["Question"]), "yes": int((df[r["Question"]] == "Yes").sum()),
-             "no": int((df[r["Question"]] == "No").sum()), "pct": float(r["% Yes"]),
+            {"q": _clean(r["Question"]), "yes": int(r["Yes"]), "no": int(r["No"]), "pct": float(r["% Yes"]),
              "red": bool(r.get("Highlight", False))}
             for _, r in summary.iterrows()
         ],
@@ -52,11 +60,11 @@ def build_html(df, report_title, summary, cat_cols, filters_text, group=None, ch
         data["compare"] = {
             "group": group.rstrip(": "),
             "groups": [{"label": str(g), "n": int(sizes[g])} for g in table.index],
-            "rows": [{"q": _clean(q), "vals": [round(float(table.loc[g, q]), 1) for g in table.index]}
+            "rows": [{"q": _clean(label_of.get(q, q)), "vals": [round(float(table.loc[g, q]), 1) for g in table.index]}
                      for q in chosen],
         }
     payload = json.dumps(data).replace("</", "<\\/")
-    return TEMPLATE.replace("__DATA__", payload).replace("__TITLE__", _html_escape(report_title)).encode("utf-8")
+    return TEMPLATE.replace("__DATA__", payload).replace("__TITLE__", _html_escape(report_title.replace("\n", " – "))).encode("utf-8")
 
 
 def _html_escape(s: str) -> str:
@@ -72,7 +80,16 @@ TEMPLATE = r"""<!doctype html>
 *{box-sizing:border-box}
 body{margin:0;background:var(--canvas);color:var(--ink);font-family:"Segoe UI",-apple-system,Helvetica,Arial,sans-serif;-webkit-tap-highlight-color:transparent}
 header{background:var(--blue);color:#fff;padding:22px 20px 18px;border-left:8px solid var(--navy)}
-header h1{margin:0;font-size:clamp(22px,4vw,32px);font-weight:700}
+header{position:relative;overflow:hidden;padding:28px 24px 22px}
+header:after{content:"";position:absolute;right:-90px;top:-120px;width:340px;height:340px;border-radius:50%;background:rgba(255,255,255,.08)}
+header .lbl{font-size:11px;letter-spacing:.35em;font-weight:700;color:#CFE6FF;margin-bottom:10px}
+header h1{margin:0;font-size:clamp(24px,4.4vw,36px);font-weight:700;letter-spacing:-.01em}
+header .t2{font-size:clamp(17px,2.6vw,22px);font-weight:400;color:#E3F1FF;margin-top:4px}
+header .by{margin-top:14px;padding-top:10px;border-top:1px solid rgba(255,255,255,.45);display:inline-block;min-width:240px}
+header .by small{display:block;font-size:10.5px;letter-spacing:.3em;font-weight:700;color:#CFE6FF}
+header .by{margin-top:26px}
+header .by b{display:block;font-size:clamp(17px,2.6vw,22px);margin-top:4px}
+header .by span{display:block;color:#E3F1FF;font-size:14px;margin-top:2px}
 header p{margin:6px 0 0;color:#E3F1FF;font-size:14px}
 nav{position:sticky;top:0;z-index:5;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12);display:flex;gap:4px;overflow-x:auto;padding:0 12px}
 nav a{padding:12px 14px;color:var(--muted);text-decoration:none;font-size:14px;font-weight:600;white-space:nowrap;border-bottom:3px solid transparent}
@@ -128,6 +145,10 @@ h2{font-size:18px;margin:6px 0 10px}
 .glegend button{display:flex;align-items:center;gap:6px;border:1px solid #C8C6C4;background:#fff;border-radius:16px;padding:6px 12px;font-size:13px;cursor:pointer}
 .glegend button.off{opacity:.4}
 .glegend i{width:11px;height:11px;border-radius:2px}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.notes .card{border-top:4px solid var(--blue)}.notes .card.rec{border-top-color:var(--navy)}
+.notes h3{margin:0 0 10px;font-size:16px}.notes ol,.notes ul{margin:0;padding-left:20px}
+.notes li{margin:0 0 8px;line-height:1.45;font-size:14.5px}
 #tip{position:fixed;z-index:20;pointer-events:none;background:#252423;color:#fff;font-size:13px;line-height:1.4;padding:9px 11px;border-radius:6px;max-width:280px;box-shadow:0 4px 14px rgba(0,0,0,.25);opacity:0;transition:opacity .12s}
 #tip.show{opacity:1}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:10px 0 24px}
@@ -135,9 +156,10 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px 0 24px}
 </style></head>
 <body>
 <header><h1 id="t"></h1><p id="sub"></p></header>
-<nav><a href="#summary">Summary</a><a href="#profile">Respondent profile</a><a href="#yesno">Yes / No results</a><a href="#compare" id="navcmp">Comparison</a></nav>
+<nav><a href="#summary">Summary</a><a href="#notes">Findings</a><a href="#profile">Respondent profile</a><a href="#yesno">Yes / No results</a><a href="#compare" id="navcmp">Comparison</a></nav>
 <main>
 <section id="summary"><h2>Summary</h2><div class="kpis" id="kpis"></div></section>
+<section id="notes"><h2>Key findings &amp; recommendations</h2><div class="notes" id="notesBox"></div></section>
 <section id="profile"><h2>Respondent profile</h2><p class="hint">Tap a slice or a legend item to see the numbers.</p><div class="donuts" id="donuts"></div></section>
 <section id="yesno"><h2>Yes / No results</h2>
  <div class="card">
@@ -158,9 +180,14 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmt = v => Math.round(v) + "%";
 
-$("#t").textContent = D.title;
-$("#sub").textContent = D.n.toLocaleString() + " responses · " + D.filters;
-$("#foot").textContent = "Generated " + D.generated + " · Aggregate results only, no individual data";
+const TL = D.title.split("\n").map(s => s.trim());
+$("#t").textContent = TL[0] || "Survey Report";
+$("#t").insertAdjacentHTML("beforebegin", '<div class="lbl">REPORT</div>');
+{ const role = (TL[1] || "").trim(), name = (TL[2] || "").trim();
+  if (role || name) $("#sub").insertAdjacentHTML("afterend",
+    `<div class="by"><small>PREPARED BY</small>${name ? `<b>${esc(name)}</b>` : ""}${role ? `<span>${esc(role)}</span>` : ""}</div>`); }
+$("#sub").textContent = D.n.toLocaleString() + " responses" + (D.filters ? " · " + D.filters : "");
+$("#foot").textContent = TL.slice(0, 2).filter(Boolean).join(" – ") + " · Aggregate results only, no individual data";
 
 /* ---------- tooltip (mouse hover + touch tap) ---------- */
 const tip = $("#tip");
@@ -179,6 +206,17 @@ function bindTip(el, htmlFn){
 }
 document.addEventListener("click", hideTip);
 window.addEventListener("scroll", hideTip, {passive:true});
+
+/* ---------- Sections chosen in the app ---------- */
+const NAV = {summary:"summary", notes:"notes", profile:"profile", yesno:"yesno", compare:"compare"};
+Object.keys(NAV).forEach(k => { if (!D.sections.includes(k)) {
+  $("#" + NAV[k]).style.display = "none";
+  const a = document.querySelector(`nav a[href="#${NAV[k]}"]`); if (a) a.style.display = "none"; } });
+{ const F = D.notes.findings, R = D.notes.recommendations;
+  if (!F.length && !R.length) { $("#notes").style.display = "none"; document.querySelector('nav a[href="#notes"]').style.display = "none"; }
+  $("#notesBox").innerHTML =
+    (F.length ? `<div class="card"><h3>Key findings</h3><ul>${F.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "") +
+    (R.length ? `<div class="card rec"><h3>Recommendations</h3><ol>${R.map(x => `<li>${esc(x)}</li>`).join("")}</ol></div>` : ""); }
 
 /* ---------- KPI cards ---------- */
 $("#kpis").innerHTML = D.kpis.map(k =>

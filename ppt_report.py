@@ -11,7 +11,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.util import Emu, Inches, Pt
 
-from pdf_report import _short, chart_slides, kpi_items
+from pdf_report import ALL_SECTIONS, _short, chart_slides, kpi_items, responses_line
 
 
 def _rgb(hex_colour):
@@ -96,63 +96,105 @@ def build_pptx(
     filters_text: str,
     group: str | None = None,
     chosen: list | None = None,
+    notes: dict | None = None,
+    sections: list | None = None,
 ) -> bytes:
+    secs = set(sections or ALL_SECTIONS)
     prs = Presentation()
     prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
-    footer = f"{report_title} · {date.today():%d %b %Y} · Aggregate results only, no individual data"
+    parts = [x.strip() for x in report_title.split("\n")] + ["", ""]
+    main_title = parts[0] or "Survey Report"
+    sub_title, author = parts[1], parts[2]                   # e.g. "DCS - Counsellor", "Seldon Lhamo"
+    footer = " – ".join(x for x in (main_title, sub_title) if x) + " · Aggregate results only, no individual data"
 
-    # ---- Title slide ----
+    # ---- Premium cover slide: title at the top, author block at the bottom ----
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     slide.background.fill.solid()
     slide.background.fill.fore_color.rgb = BLUE                # sky-blue cover
-    _rect(slide, 0, 0, Inches(0.2), SLIDE_H, NAVY)
-    _rect(slide, Inches(0.9), Inches(2.25), Inches(1.1), Inches(0.07), WHITE)
-    _text(slide, report_title, Inches(0.9), Inches(2.5), Inches(11.5), Inches(1.0), size=40, bold=True, colour=WHITE)
-    _text(slide, f"{len(df):,} responses", Inches(0.9), Inches(3.55), Inches(11.5), Inches(0.5), size=20, colour=HEADER_SUBTEXT)
-    _text(slide, filters_text, Inches(0.9), Inches(4.1), Inches(11.5), Inches(1.0), size=14, colour=HEADER_SUBTEXT)
-    _text(slide, f"Generated {date.today():%d %B %Y}", Inches(0.9), Inches(6.7), Inches(8), Inches(0.4),
-          size=12, colour=HEADER_SUBTEXT)
+    for (cx, cy, r, colour) in [(13.0, 0.2, 3.3, "#2A99FF"), (11.9, 7.3, 2.4, "#2696FF"), (9.7, 3.6, 1.25, "#2A99FF")]:
+        circle = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(cx - r), Inches(cy - r), Inches(2 * r), Inches(2 * r))
+        circle.fill.solid()
+        circle.fill.fore_color.rgb = _rgb(colour)
+        circle.line.fill.background()
+        circle.shadow.inherit = False
+    _rect(slide, 0, 0, Inches(0.22), SLIDE_H, NAVY)
+    # Top: label, accent bar, title, responses
+    _text(slide, "R E P O R T", Inches(0.9), Inches(0.75), Inches(4), Inches(0.3), size=11, bold=True,
+          colour=_rgb("#CFE6FF"))
+    _rect(slide, Inches(0.9), Inches(1.15), Inches(0.9), Inches(0.06), WHITE)
+    _text(slide, main_title, Inches(0.9), Inches(1.4), Inches(8.4), Inches(1.9), size=44, bold=True, colour=WHITE)
+    _text(slide, responses_line(df, filters_text), Inches(0.9), Inches(3.35), Inches(9), Inches(0.4),
+          size=14, colour=HEADER_SUBTEXT)
+    # Bottom: divider, PREPARED BY, name, role
+    _rect(slide, Inches(0.9), Inches(5.35), Inches(4.2), Emu(9525), WHITE)
+    if author or sub_title:
+        _text(slide, "P R E P A R E D   B Y", Inches(0.9), Inches(5.55), Inches(5), Inches(0.3), size=10,
+              bold=True, colour=_rgb("#CFE6FF"))
+    if author:
+        _text(slide, author, Inches(0.9), Inches(5.85), Inches(8), Inches(0.5), size=26, bold=True, colour=WHITE)
+    if sub_title:
+        _text(slide, sub_title, Inches(0.9), Inches(6.45 if author else 5.85), Inches(8), Inches(0.4), size=16,
+              colour=HEADER_SUBTEXT)
 
-    # ---- Summary slide: KPI cards + highest / lowest ----
-    slide = _base_slide(prs, "Summary", "Key indicators and the questions with the highest and lowest % Yes", footer)
-    items = kpi_items(df, summary)
-    gap = Inches(0.2)
-    left = Inches(0.35)
-    kw = int((SLIDE_W - 2 * left - gap * (len(items) - 1)) / len(items))
-    ky, kh = HEADER_H + Inches(0.2), Inches(1.45)
-    for i, (value, label, red) in enumerate(items):
-        x = left + i * (kw + gap)
-        _card(slide, x, ky, kw, kh, top=RED if red else BLUE)
-        _text(slide, value, x + Inches(0.2), ky + Inches(0.18), kw - Inches(0.3), Inches(0.6), size=30, bold=True,
-              colour=RED if red else INK)
-        _text(slide, label, x + Inches(0.2), ky + Inches(0.8), kw - Inches(0.35), Inches(0.6), size=10.5, colour=MUTED)
-
-    top = summary.sort_values("% Yes", ascending=False)
-    cy = ky + kh + Inches(0.2)
-    ch = SLIDE_H - cy - Inches(0.45)
-    cw = int((SLIDE_W - 2 * left - gap) / 2)
-    for col, (label, rows) in enumerate([("Highest % Yes", top.head(6)), ("Lowest % Yes", top.tail(6).iloc[::-1])]):
-        x = left + col * (cw + gap)
-        _card(slide, x, cy, cw, ch)
-        _text(slide, label, x + Inches(0.25), cy + Inches(0.15), cw, Inches(0.35), size=14, bold=True)
-        row_h = int((ch - Inches(0.6)) / 6)
-        for i, (_, r) in enumerate(rows.iterrows()):
-            ry = cy + Inches(0.6) + i * row_h
-            red = bool(r.get("Highlight", False))
-            colour = RED if red else BLUE
-            _text(slide, f"{r['% Yes']:.0f}%", x + Inches(0.25), ry, Inches(0.9), Inches(0.35), size=15, bold=True,
+    if "summary" in secs:
+        # ---- Summary slide: KPI cards + highest / lowest ----
+        slide = _base_slide(prs, "Summary", "Key indicators and the questions with the highest and lowest % Yes", footer)
+        items = kpi_items(df, summary)
+        gap = Inches(0.2)
+        left = Inches(0.35)
+        kw = int((SLIDE_W - 2 * left - gap * (len(items) - 1)) / len(items))
+        ky, kh = HEADER_H + Inches(0.2), Inches(1.45)
+        for i, (value, label, red) in enumerate(items):
+            x = left + i * (kw + gap)
+            _card(slide, x, ky, kw, kh, top=RED if red else BLUE)
+            _text(slide, value, x + Inches(0.2), ky + Inches(0.18), kw - Inches(0.3), Inches(0.6), size=30, bold=True,
                   colour=RED if red else INK)
-            bar_w = Inches(0.9)
-            _rect(slide, x + Inches(0.25), ry + Inches(0.36), bar_w, Inches(0.07), NO_GREY)
-            if r["% Yes"] > 0:
-                _rect(slide, x + Inches(0.25), ry + Inches(0.36), max(1, int(bar_w * r["% Yes"] / 100)),
-                      Inches(0.07), colour)
-            q = _short(r["Question"], 1000).replace("\n", " ")
-            _text(slide, q if len(q) < 120 else q[:118] + "…", x + Inches(1.35), ry + Inches(0.03),
-                  cw - Inches(1.6), row_h, size=10.5)
+            _text(slide, label, x + Inches(0.2), ky + Inches(0.8), kw - Inches(0.35), Inches(0.6), size=10.5, colour=MUTED)
+
+        top = summary.sort_values("% Yes", ascending=False)
+        cy = ky + kh + Inches(0.2)
+        ch = SLIDE_H - cy - Inches(0.45)
+        cw = int((SLIDE_W - 2 * left - gap) / 2)
+        for col, (label, rows) in enumerate([("Highest % Yes", top.head(6)), ("Lowest % Yes", top.tail(6).iloc[::-1])]):
+            x = left + col * (cw + gap)
+            _card(slide, x, cy, cw, ch)
+            _text(slide, label, x + Inches(0.25), cy + Inches(0.15), cw, Inches(0.35), size=14, bold=True)
+            row_h = int((ch - Inches(0.6)) / 6)
+            for i, (_, r) in enumerate(rows.iterrows()):
+                ry = cy + Inches(0.6) + i * row_h
+                red = bool(r.get("Highlight", False))
+                colour = RED if red else BLUE
+                _text(slide, f"{r['% Yes']:.0f}%", x + Inches(0.25), ry, Inches(0.9), Inches(0.35), size=15, bold=True,
+                      colour=RED if red else INK)
+                bar_w = Inches(0.9)
+                _rect(slide, x + Inches(0.25), ry + Inches(0.36), bar_w, Inches(0.07), NO_GREY)
+                if r["% Yes"] > 0:
+                    _rect(slide, x + Inches(0.25), ry + Inches(0.36), max(1, int(bar_w * r["% Yes"] / 100)),
+                          Inches(0.07), colour)
+                q = _short(r["Question"], 1000).replace("\n", " ")
+                _text(slide, q if len(q) < 120 else q[:118] + "…", x + Inches(1.35), ry + Inches(0.03),
+                      cw - Inches(1.6), row_h, size=10.5)
+
+
+    # ---- Key findings & recommendations ----
+    if "notes" in secs and notes and (notes.get("findings") or notes.get("recommendations")):
+        slide = _base_slide(prs, "Key findings & recommendations", sub_title, footer)
+        boxes = [(h, items) for h, items in (("Key findings", notes.get("findings") or []),
+                                             ("Recommendations", notes.get("recommendations") or [])) if items]
+        gap, left = Inches(0.2), Inches(0.35)
+        bw = int((SLIDE_W - 2 * left - gap * (len(boxes) - 1)) / len(boxes))
+        by = HEADER_H + Inches(0.2)
+        bh = SLIDE_H - by - Inches(0.45)
+        for bi, (heading, items) in enumerate(boxes):
+            x = left + bi * (bw + gap)
+            _card(slide, x, by, bw, bh, top=BLUE if bi == 0 else NAVY)
+            _text(slide, heading, x + Inches(0.3), by + Inches(0.25), bw - Inches(0.6), Inches(0.4), size=18, bold=True)
+            body = "\n".join((f"{n}.  " if bi == 1 else "•  ") + it for n, it in enumerate(items, 1))
+            size = 14 if sum(len(i) for i in items) < 700 else 12
+            _text(slide, body, x + Inches(0.3), by + Inches(0.8), bw - Inches(0.6), bh - Inches(1.0), size=size)
 
     # ---- Chart slides (same as the PDF) ----
-    for title, subtitle, fig in chart_slides(df, summary, cat_cols, group, chosen):
+    for title, subtitle, fig in chart_slides(df, summary, cat_cols, group, chosen, secs):
         slide = _base_slide(prs, title, subtitle, footer)
         _figure_card(slide, fig)
 

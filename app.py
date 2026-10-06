@@ -3,6 +3,8 @@ Survey Analyser - Power BI-style dashboard for survey Excel / CSV exports.
 Run:  pip install streamlit pandas openpyxl plotly matplotlib reportlab python-pptx
       streamlit run app.py
 """
+import json
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -143,10 +145,12 @@ for c in cat_cols[:6]:
     df = df[df[c].isin(pick)]
     if len(pick) < len(opts):
         active_filters.append(f"{c.rstrip(': ')}: {', '.join(map(str, pick))}")
-filters_text = "Filters: " + "; ".join(active_filters) if active_filters else "All respondents (no filters)"
+filters_text = "Filters: " + "; ".join(active_filters) if active_filters else ""
 
-st.markdown(f'<div class="pbi-header"><h1>Survey Dashboard – {report_name}</h1>'
-            f'<p>{filters_text}</p></div>', unsafe_allow_html=True)
+st.markdown(f'<div class="pbi-header"><h1>Situation Analysis &amp; Survey Report</h1>'
+            f'<div style="font-size:18px;font-weight:600;margin-top:2px">{report_name} - Counsellor</div>'
+            f'<p>{len(df):,} responses{" · " + filters_text if filters_text else ""}</p></div>',
+            unsafe_allow_html=True)
 
 if df.empty:
     st.warning("No responses match the filters.")
@@ -175,7 +179,7 @@ st.write("")
 
 # ---------------- Pages (like Power BI report pages) ----------------
 tab_overview, tab_yesno, tab_compare, tab_text, tab_export = st.tabs(
-    ["Overview", "Yes / No results", "Compare groups", "Written reasons", "Export report"])
+    ["Overview", "Yes / No results", "Compare groups", "Written reasons", "✏️ Edit & export"])
 
 # ---- Overview: donut charts ----
 with tab_overview:
@@ -268,21 +272,136 @@ with tab_text:
     else:
         st.info("No written-answer columns found.")
 
-# ---- Export ----
+# ---- Edit & export ----
+SECTION_LABELS = {"summary": "Summary", "notes": "Key findings & recommendations", "profile": "Respondent profile",
+                  "yesno": "Yes / No results", "compare": "Comparison"}
+
+
+def clean_question(q: str) -> str:
+    t = " ".join(str(q).split())
+    if len(t) > 3 and t[0].isdigit() and "." in t[:4]:
+        t = t.split(".", 1)[1].strip()
+    return t
+
+
+def lines_of(text: str) -> list:
+    return [ln.strip(" •-*\t") for ln in str(text).splitlines() if ln.strip(" •-*\t")]
+
+
+ss = st.session_state
+# Defaults (the role line follows the chosen sheet until you change it)
+ss.setdefault("ed_title", "Situation Analysis & Survey Report")
+ss.setdefault("ed_author", "Seldon Lhamo")
+ss.setdefault("ed_findings", "")
+ss.setdefault("ed_recs", "")
+ss.setdefault("ed_sections", list(SECTION_LABELS))
+ss.setdefault("q_settings", {})          # original question -> {"show", "label", "red"}
+if ss.get("ed_sheet") != report_name:
+    ss["ed_role"] = f"{report_name} - Counsellor"
+    ss["ed_sheet"] = report_name
+
 with tab_export:
+    # ---------- Load saved edits ----------
+    with st.expander("📂 Load saved edits (so you don't have to edit again)"):
+        saved = st.file_uploader("Choose a saved edits file (.json)", type=["json"], key="edits_file")
+        if saved is not None and ss.get("edits_loaded_id") != saved.file_id:
+            try:
+                e = json.loads(saved.getvalue().decode("utf-8"))
+                for k in ("title", "role", "author", "findings", "recs"):
+                    if k in e:
+                        ss[f"ed_{k}"] = e[k]
+                if e.get("sections"):
+                    ss["ed_sections"] = [x for x in e["sections"] if x in SECTION_LABELS]
+                ss["q_settings"] = e.get("questions", {})
+                ss["edits_loaded_id"] = saved.file_id
+                ss["q_editor_version"] = ss.get("q_editor_version", 0) + 1
+                st.success("Edits loaded.")
+            except Exception:
+                st.error("This file could not be read. Please choose an edits file saved from this app.")
+
+    # ---------- 1. Cover ----------
+    with st.container(key="card_cover"):
+        card_title("1 · Cover page")
+        t1, t2, t3 = st.columns([2, 1.3, 1.3])
+        t1.text_input("Report title", key="ed_title")
+        t2.text_input("Role / school", key="ed_role")
+        t3.text_input("Prepared by", key="ed_author")
+    st.write("")
+
+    # ---------- 2. Findings & recommendations ----------
+    with st.container(key="card_notes"):
+        card_title("2 · Key findings & recommendations")
+        st.caption("Write one point per line. They appear on their own page in the PDF, PowerPoint and "
+                   "Interactive report.")
+        n1, n2 = st.columns(2)
+        n1.text_area("Key findings", key="ed_findings", height=220,
+                     placeholder="e.g. 47% of students do not get 8–10 hours of sleep, mostly due to study load")
+        n2.text_area("Recommendations", key="ed_recs", height=220,
+                     placeholder="e.g. Review hostel study and wake-up times to protect sleep")
+    st.write("")
+
+    # ---------- 3. Questions ----------
+    with st.container(key="card_questions"):
+        card_title("3 · Questions in the report")
+        st.caption("Untick **Show** to leave a question out, change its **Wording in report**, "
+                   "and tick **Red bar** for key indicators.")
+        qs = ss["q_settings"]
+        base = pd.DataFrame({
+            "Show": [qs.get(q, {}).get("show", True) for q in summary["Question"]],
+            "Wording in report": [qs.get(q, {}).get("label", clean_question(q)) for q in summary["Question"]],
+            "Red bar": [qs.get(q, {}).get("red", bool(h)) for q, h in zip(summary["Question"], summary["Highlight"])],
+            "% Yes": summary["% Yes"].values,
+            "Question in survey": summary["Question"].values,
+        })
+        edited = st.data_editor(
+            base, hide_index=True, use_container_width=True, num_rows="fixed",
+            key=f"q_editor_{report_name}_{ss.get('q_editor_version', 0)}",
+            disabled=["% Yes", "Question in survey"],
+            column_config={
+                "Show": st.column_config.CheckboxColumn(width="small"),
+                "Wording in report": st.column_config.TextColumn(width="large"),
+                "Red bar": st.column_config.CheckboxColumn(width="small"),
+                "% Yes": st.column_config.NumberColumn(format="%.0f%%", width="small"),
+                "Question in survey": st.column_config.TextColumn(width="medium"),
+            })
+        for _, r in edited.iterrows():
+            qs[r["Question in survey"]] = {"show": bool(r["Show"]), "label": str(r["Wording in report"]).strip(),
+                                           "red": bool(r["Red bar"])}
+    st.write("")
+
+    # ---------- 4. Pages + download ----------
     with st.container(key="card_export"):
-        pdf_title = st.text_input("Report title", f"Survey Report – {report_name}")
-        st.caption("The Interactive report is a web page that works on phones and computers, even offline: "
-                   "tap any chart to see the exact numbers. ")
-        st.caption("Reports include the profile, all Yes/No results, and the group comparison chosen in "
-                   "'Compare groups'. No names or written answers are included.")
-        report_args = (df, pdf_title, summary, cat_cols, filters_text, group, chosen)
-        # Forget reports made for a different sheet, filter or comparison
-        signature = (file.name, report_name, filters_text, pdf_title, group, tuple(chosen or []))
-        if st.session_state.get("report_signature") != signature:
+        card_title("4 · Pages and download")
+        st.multiselect("Pages to include", list(SECTION_LABELS), key="ed_sections",
+                       format_func=lambda k: SECTION_LABELS[k])
+
+        # Build the edited report data
+        summary_out = summary.copy()
+        summary_out["Original"] = summary_out["Question"]
+        summary_out["Highlight"] = [qs[q]["red"] for q in summary_out["Original"]]
+        summary_out["Question"] = [qs[q]["label"] or clean_question(q) for q in summary_out["Original"]]
+        summary_out = summary_out[[qs[q]["show"] for q in summary_out["Original"]]].reset_index(drop=True)
+        notes = {"findings": lines_of(ss["ed_findings"]), "recommendations": lines_of(ss["ed_recs"])}
+        sections = ss["ed_sections"] or list(SECTION_LABELS)
+        pdf_title = "\n".join([ss["ed_title"].strip(), ss["ed_role"].strip(), ss["ed_author"].strip()])
+        file_stem = (" - ".join(x.strip() for x in (ss["ed_title"], ss["ed_role"]) if x.strip()) or "Survey Report")
+        file_stem = file_stem.replace("/", "-").replace("&", "and")
+
+        edits = {"title": ss["ed_title"], "role": ss["ed_role"], "author": ss["ed_author"],
+                 "findings": ss["ed_findings"], "recs": ss["ed_recs"], "sections": sections, "questions": qs}
+        report_kwargs = dict(notes=notes, sections=sections)
+        report_args = (df, pdf_title, summary_out, cat_cols, filters_text, group, chosen)
+
+        # Forget reports made before the latest edits / sheet / filter change
+        signature = (file.name, report_name, filters_text, group, tuple(chosen or []),
+                     json.dumps(edits, sort_keys=True))
+        if ss.get("report_signature") != signature:
             for ext in ("pdf", "pptx", "html"):
-                st.session_state.pop(ext, None)
-            st.session_state["report_signature"] = signature
+                ss.pop(ext, None)
+            ss["report_signature"] = signature
+
+        st.caption("The Interactive report is a web page that works on phones and computers, even offline: "
+                   "tap any chart to see the exact numbers. No names or written answers are included.")
         EXPORTS = [
             ("PDF", build_pdf, "pdf", "application/pdf"),
             ("PowerPoint", build_pptx, "pptx",
@@ -293,9 +412,15 @@ with tab_export:
             with col:
                 if st.button(f"Create {label}", use_container_width=True):
                     with st.spinner(f"Building {label}..."):
-                        st.session_state[ext] = builder(*report_args)
-                if ext in st.session_state:
-                    st.download_button(f"Download {label}", st.session_state[ext], f"{pdf_title}.{ext}",
+                        ss[ext] = builder(*report_args, **report_kwargs)
+                if ext in ss:
+                    st.download_button(f"⬇️ Download {label}", ss[ext], f"{file_stem}.{ext}",
                                        mime, use_container_width=True)
-        st.download_button("Download Yes/No summary (CSV)",
-                           summary.drop(columns="Highlight").to_csv(index=False), "summary.csv")
+
+        st.divider()
+        c1, c2 = st.columns(2)
+        c1.download_button("💾 Save my edits (to reuse next time)", json.dumps(edits, indent=2, ensure_ascii=False),
+                           f"{file_stem} - edits.json", "application/json", use_container_width=True)
+        c2.download_button("Download Yes/No summary (CSV)",
+                           summary_out.drop(columns=["Highlight", "Original"]).to_csv(index=False), "summary.csv",
+                           use_container_width=True)

@@ -43,6 +43,15 @@ PAGE_W, PAGE_H = landscape(A4)
 MARGIN = 28
 
 
+ALL_SECTIONS = ["summary", "notes", "profile", "yesno", "compare"]
+
+
+def responses_line(df, filters_text: str) -> str:
+    """'461 responses', plus the filter only when one is applied."""
+    text = f"{len(df):,} responses"
+    return f"{text}  ·  {filters_text}" if filters_text else text
+
+
 def pct_yes(s: pd.Series) -> float:
     answered = s.isin(["Yes", "No"]).sum()
     return (s == "Yes").sum() / answered * 100 if answered else 0.0
@@ -74,10 +83,12 @@ def _clean_axes(ax, xgrid=True):
 
 # ---------------- Charts (shared by PDF and PowerPoint) ----------------
 
-def chart_slides(df, summary, cat_cols, group=None, chosen=None):
+def chart_slides(df, summary, cat_cols, group=None, chosen=None, sections=None):
     """Yield (title, subtitle, matplotlib figure) for each chart page/slide."""
+    secs = set(sections or ALL_SECTIONS)
+    label_of = dict(zip(summary["Original"], summary["Question"])) if "Original" in summary else {}
     # ---- Respondent profile: donut charts ----
-    profile_cols = cat_cols[:6]
+    profile_cols = cat_cols[:6] if "profile" in secs else []
     if profile_cols:
         n = len(profile_cols)
         ncols = 3 if n > 2 else n
@@ -101,8 +112,10 @@ def chart_slides(df, summary, cat_cols, group=None, chosen=None):
         yield "Respondent profile", f"{len(df)} responses", fig
 
     # ---- Yes / No: 100% stacked bars ----
-    n_pages = max(1, -(-len(summary) // 12))  # at most 12 questions per page, spread evenly
-    per_page = max(1, -(-len(summary) // n_pages))
+    if "yesno" not in secs or summary.empty:
+        summary = summary.iloc[0:0]
+    n_pages = -(-len(summary) // 12) if len(summary) else 0  # at most 12 questions per page, spread evenly
+    per_page = max(1, -(-len(summary) // max(1, n_pages)))
     pages = [summary.iloc[i: i + per_page] for i in range(0, len(summary), per_page)]
     for p, chunk in enumerate(pages, 1):
         fig, ax = plt.subplots(figsize=(13, 0.56 * len(chunk) + 1.1))
@@ -133,7 +146,7 @@ def chart_slides(df, summary, cat_cols, group=None, chosen=None):
         yield "Yes / No results", f"Part {p} of {len(pages)} · % of respondents answering Yes and No", fig
 
     # ---- Group comparison: clustered horizontal bars ----
-    if group and chosen:
+    if group and chosen and "compare" in secs:
         table = df.groupby(group)[chosen].agg(pct_yes)
         sizes = df.groupby(group).size()
         groups = list(table.index)
@@ -147,7 +160,7 @@ def chart_slides(df, summary, cat_cols, group=None, chosen=None):
             for y, v in zip(ys, vals):
                 ax.text(v + 0.8, y, f"{v:.0f}%", va="center", fontsize=8.5, color=INK)
         ax.set_yticks([i + bar_h * (g - 1) / 2 for i in range(len(chosen))])
-        ax.set_yticklabels([_short(q, 55) for q in chosen], fontsize=9)
+        ax.set_yticklabels([_short(label_of.get(q, q), 55) for q in chosen], fontsize=9)
         ax.invert_yaxis()
         ax.set_xlim(0, 108)
         ax.xaxis.set_major_formatter(mticker.PercentFormatter())
@@ -241,80 +254,154 @@ def build_pdf(
     filters_text: str,
     group: str | None = None,
     chosen: list | None = None,
+    notes: dict | None = None,
+    sections: list | None = None,
 ) -> bytes:
+    """notes = {"findings": [...], "recommendations": [...]}; sections = pages to include."""
+    secs = set(sections or ALL_SECTIONS)
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=landscape(A4))
-    footer = f"{report_title} · Generated {date.today():%d %b %Y} · Aggregate results only, no individual data"
+    parts = [x.strip() for x in report_title.split("\n")] + ["", ""]
+    main_title = parts[0] or "Survey Report"
+    sub_title, author = parts[1], parts[2]                   # e.g. "DCS - Counsellor", "Seldon Lhamo"
+    footer = " – ".join(x for x in (main_title, sub_title) if x) + " · Aggregate results only, no individual data"
 
-    # ---- Title page ----
-    c.setFillColor(HEADER)                       # sky-blue cover
+    # ---- Premium cover page: title at the top, author block at the bottom ----
+    c.setFillColor(HEADER)                                   # sky-blue background
     c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
-    c.setFillColor(HEADER_STRIP)
-    c.rect(0, 0, 14, PAGE_H, fill=1, stroke=0)
+    c.saveState()                                            # soft decorative circles on the right
     c.setFillColor("white")
-    c.rect(60, PAGE_H / 2 + 92, 70, 5, fill=1, stroke=0)
-    c.setFont("Helvetica-Bold", 34)
-    c.drawString(60, PAGE_H / 2 + 45, report_title)
-    c.setFillColor(HEADER_SUBTEXT)
-    c.setFont("Helvetica", 16)
-    c.drawString(60, PAGE_H / 2 + 12, f"{len(df):,} responses")
-    c.setFont("Helvetica", 11.5)
-    for i, line in enumerate(_wrap_lines(filters_text, 110, 3)):
-        c.drawString(60, PAGE_H / 2 - 16 - i * 15, line)
-    c.setFont("Helvetica", 10.5)
-    c.drawString(60, 50, f"Generated {date.today():%d %B %Y}")
+    for (cx, cy, r, a) in [(PAGE_W - 30, PAGE_H - 20, 240, 0.07), (PAGE_W - 120, 40, 170, 0.06),
+                           (PAGE_W - 250, PAGE_H / 2 - 10, 90, 0.05)]:
+        c.setFillAlpha(a)
+        c.circle(cx, cy, r, fill=1, stroke=0)
+    c.restoreState()
+    c.setFillColor(HEADER_STRIP)                             # navy strip
+    c.rect(0, 0, 16, PAGE_H, fill=1, stroke=0)
+
+    x0 = 64
+    # Top: label, accent bar, title
+    c.setFillColor("#CFE6FF")
+    c.setFont("Helvetica-Bold", 10.5)
+    c.drawString(x0, PAGE_H - 70, "R E P O R T")
+    c.setFillColor("white")
+    c.rect(x0, PAGE_H - 92, 64, 4, fill=1, stroke=0)
+    title_size = 40 if len(main_title) <= 36 else 34
+    y = PAGE_H - 92 - 22 - title_size
+    c.setFont("Helvetica-Bold", title_size)
+    for row in _wrap_lines(main_title, 32 if title_size == 40 else 38, 3):
+        c.drawString(x0, y, row)
+        y -= title_size + 8
+    c.setFillColor("#E3F1FF")
+    c.setFont("Helvetica", 13)
+    c.drawString(x0, y - 4, responses_line(df, filters_text)[:120])
+
+    # Bottom: divider, PREPARED BY, name, role
+    base = 70
+    c.setStrokeColor("white")
+    c.setStrokeAlpha(0.55)
+    c.setLineWidth(0.8)
+    c.line(x0, base + 92, x0 + 300, base + 92)
+    c.setStrokeAlpha(1)
+    if author or sub_title:
+        c.setFillColor("#CFE6FF")
+        c.setFont("Helvetica-Bold", 9.5)
+        c.drawString(x0, base + 70, "P R E P A R E D   B Y")
+    if author:
+        c.setFillColor("white")
+        c.setFont("Helvetica-Bold", 22)
+        c.drawString(x0, base + 40, author)
+    if sub_title:
+        c.setFillColor("#E3F1FF")
+        c.setFont("Helvetica", 14)
+        c.drawString(x0, base + (16 if author else 40), sub_title)
     c.showPage()
 
-    # ---- Summary page: KPI cards + highest / lowest ----
-    _canvas_bg(c)
-    _header(c, "Summary", "Key indicators and the questions with the highest and lowest % Yes")
-    items = kpi_items(df, summary)
-    gap = 12
-    kw = (PAGE_W - 2 * MARGIN - gap * (len(items) - 1)) / len(items)
-    kh = 92
-    ky = PAGE_H - 62 - 16 - kh
-    for i, (value, label, red) in enumerate(items):
-        x = MARGIN + i * (kw + gap)
-        _card(c, x, ky, kw, kh, top_colour=HIGHLIGHT if red else BLUE)
-        c.setFillColor(HIGHLIGHT if red else INK)
-        c.setFont("Helvetica-Bold", 28)
-        c.drawString(x + 14, ky + kh - 42, value)
-        c.setFillColor(MUTED)
-        c.setFont("Helvetica", 9)
-        for j, line in enumerate(_wrap_lines(label, int(kw / 4.6), 3)):
-            c.drawString(x + 14, ky + kh - 58 - j * 11, line)
-
-    top = summary.sort_values("% Yes", ascending=False)
-    ch_y = 32
-    ch_h = ky - 16 - ch_y
-    cw = (PAGE_W - 2 * MARGIN - gap) / 2
-    for col, (label, rows) in enumerate([("Highest % Yes", top.head(7)), ("Lowest % Yes", top.tail(7).iloc[::-1])]):
-        x = MARGIN + col * (cw + gap)
-        _card(c, x, ch_y, cw, ch_h)
-        c.setFillColor(INK)
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(x + 14, ch_y + ch_h - 24, label)
-        row_h = (ch_h - 44) / 7
-        for i, (_, r) in enumerate(rows.iterrows()):
-            yy = ch_y + ch_h - 50 - i * row_h
-            red = bool(r.get("Highlight", False))
-            bar_w = 70
-            c.setFillColor(NO_GREY)
-            c.rect(x + 14, yy - 9, bar_w, 6, fill=1, stroke=0)
-            c.setFillColor(HIGHLIGHT if red else BLUE)
-            c.rect(x + 14, yy - 9, bar_w * r["% Yes"] / 100, 6, fill=1, stroke=0)
+    if "summary" in secs:
+        # ---- Summary page: KPI cards + highest / lowest ----
+        _canvas_bg(c)
+        _header(c, "Summary", "Key indicators and the questions with the highest and lowest % Yes")
+        items = kpi_items(df, summary)
+        gap = 12
+        kw = (PAGE_W - 2 * MARGIN - gap * (len(items) - 1)) / len(items)
+        kh = 92
+        ky = PAGE_H - 62 - 16 - kh
+        for i, (value, label, red) in enumerate(items):
+            x = MARGIN + i * (kw + gap)
+            _card(c, x, ky, kw, kh, top_colour=HIGHLIGHT if red else BLUE)
             c.setFillColor(HIGHLIGHT if red else INK)
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(x + 14, yy + 1, f"{r['% Yes']:.0f}%")
-            c.setFillColor(INK)
+            c.setFont("Helvetica-Bold", 28)
+            c.drawString(x + 14, ky + kh - 42, value)
+            c.setFillColor(MUTED)
             c.setFont("Helvetica", 9)
-            for j, line in enumerate(_wrap_lines(_one_line(r["Question"]), int((cw - 120) / 4.4), 2)):
-                c.drawString(x + 98, yy + 1 - j * 10.5, line)
-    _footer(c, footer)
-    c.showPage()
+            for j, line in enumerate(_wrap_lines(label, int(kw / 4.6), 3)):
+                c.drawString(x + 14, ky + kh - 58 - j * 11, line)
+
+        top = summary.sort_values("% Yes", ascending=False)
+        ch_y = 32
+        ch_h = ky - 16 - ch_y
+        cw = (PAGE_W - 2 * MARGIN - gap) / 2
+        for col, (label, rows) in enumerate([("Highest % Yes", top.head(7)), ("Lowest % Yes", top.tail(7).iloc[::-1])]):
+            x = MARGIN + col * (cw + gap)
+            _card(c, x, ch_y, cw, ch_h)
+            c.setFillColor(INK)
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(x + 14, ch_y + ch_h - 24, label)
+            row_h = (ch_h - 44) / 7
+            for i, (_, r) in enumerate(rows.iterrows()):
+                yy = ch_y + ch_h - 50 - i * row_h
+                red = bool(r.get("Highlight", False))
+                bar_w = 70
+                c.setFillColor(NO_GREY)
+                c.rect(x + 14, yy - 9, bar_w, 6, fill=1, stroke=0)
+                c.setFillColor(HIGHLIGHT if red else BLUE)
+                c.rect(x + 14, yy - 9, bar_w * r["% Yes"] / 100, 6, fill=1, stroke=0)
+                c.setFillColor(HIGHLIGHT if red else INK)
+                c.setFont("Helvetica-Bold", 12)
+                c.drawString(x + 14, yy + 1, f"{r['% Yes']:.0f}%")
+                c.setFillColor(INK)
+                c.setFont("Helvetica", 9)
+                for j, line in enumerate(_wrap_lines(_one_line(r["Question"]), int((cw - 120) / 4.4), 2)):
+                    c.drawString(x + 98, yy + 1 - j * 10.5, line)
+        _footer(c, footer)
+        c.showPage()
+
+
+    # ---- Key findings & recommendations ----
+    if "notes" in secs and notes and (notes.get("findings") or notes.get("recommendations")):
+        _canvas_bg(c)
+        _header(c, "Key findings & recommendations", sub_title or "")
+        boxes = [(t, items) for t, items in (("Key findings", notes.get("findings") or []),
+                                               ("Recommendations", notes.get("recommendations") or [])) if items]
+        gap = 12
+        bw = (PAGE_W - 2 * MARGIN - gap * (len(boxes) - 1)) / len(boxes)
+        by, bh = 32, PAGE_H - 62 - 16 - 32
+        for bi, (heading, items) in enumerate(boxes):
+            x = MARGIN + bi * (bw + gap)
+            _card(c, x, by, bw, bh, top_colour=BLUE if bi == 0 else HEADER_STRIP)
+            c.setFillColor(INK)
+            c.setFont("Helvetica-Bold", 15)
+            c.drawString(x + 18, by + bh - 34, heading)
+            yy = by + bh - 62
+            chars = int((bw - 60) / 6.7)
+            for n, item in enumerate(items, 1):
+                lines = textwrap.wrap(item, chars) or [""]
+                if yy - 19 * len(lines) < by + 14:
+                    break
+                c.setFillColor(BLUE if bi == 0 else HEADER_STRIP)
+                c.setFont("Helvetica-Bold", 13.5)
+                c.drawString(x + 18, yy, f"{n}." if bi == 1 else "•")
+                c.setFillColor(INK)
+                c.setFont("Helvetica", 13.5)
+                for line in lines:
+                    c.drawString(x + 38, yy, line)
+                    yy -= 19
+                yy -= 10
+        _footer(c, footer)
+        c.showPage()
 
     # ---- Chart pages ----
-    for title, subtitle, fig in chart_slides(df, summary, cat_cols, group, chosen):
+    for title, subtitle, fig in chart_slides(df, summary, cat_cols, group, chosen, secs):
         _canvas_bg(c)
         _header(c, title, subtitle)
         _image_in_card(c, _fig_image(fig))
