@@ -288,6 +288,25 @@ def lines_of(text: str) -> list:
     return [ln.strip(" •-*\t") for ln in str(text).splitlines() if ln.strip(" •-*\t")]
 
 
+def auto_findings(df, summary, group, chosen) -> str:
+    """Draft key findings from the data (the user can edit them)."""
+    out = [f"{len(df):,} students responded to the survey."]
+    for _, r in summary[summary["Highlight"]].iterrows():
+        out.append(f"{r['% Yes']:.0f}% answered Yes to: \"{clean_question(r['Question'])}\"")
+    if group and chosen:
+        table = df.groupby(group)[chosen].agg(pct_yes)
+        gaps = []
+        for q in chosen:
+            col = table[q].dropna()
+            if len(col) >= 2:
+                gaps.append((col.max() - col.min(), q, col.idxmax(), col.max(), col.idxmin(), col.min()))
+        for gap, q, hi, hv, lo, lv in sorted(gaps, reverse=True)[:3]:
+            if gap >= 10:
+                out.append(f"\"{clean_question(q)}\": {hi} {hv:.0f}% vs {lo} {lv:.0f}% "
+                           f"({group.rstrip(': ')} difference of {gap:.0f} points).")
+    return "\n".join(out)
+
+
 ss = st.session_state
 # Defaults (the role line follows the chosen sheet until you change it)
 ss.setdefault("ed_title", "Situation Analysis & Survey Report")
@@ -301,6 +320,16 @@ if ss.get("ed_sheet") != report_name:
     ss["ed_sheet"] = report_name
 
 with tab_export:
+    suggested = auto_findings(df, summary, group, chosen)
+    if ss.pop("refill_findings", False):            # "Refill" button was pressed
+        ss["findings_is_auto"] = True
+        ss["ed_findings"] = ""
+    # Keep the automatic draft up to date only until the user writes their own text
+    if ss.get("ed_findings", "") not in ("", ss.get("last_suggested", "")):
+        ss["findings_is_auto"] = False
+    if ss.get("findings_is_auto", True):
+        ss["ed_findings"] = suggested
+    ss["last_suggested"] = suggested
     # ---------- Load saved edits ----------
     with st.expander("📂 Load saved edits (so you don't have to edit again)"):
         saved = st.file_uploader("Choose a saved edits file (.json)", type=["json"], key="edits_file")
@@ -314,6 +343,7 @@ with tab_export:
                     ss["ed_sections"] = [x for x in e["sections"] if x in SECTION_LABELS]
                 ss["q_settings"] = e.get("questions", {})
                 ss["edits_loaded_id"] = saved.file_id
+                ss["findings_is_auto"] = False
                 ss["q_editor_version"] = ss.get("q_editor_version", 0) + 1
                 st.success("Edits loaded.")
             except Exception:
@@ -338,6 +368,11 @@ with tab_export:
                      placeholder="e.g. 47% of students do not get 8–10 hours of sleep, mostly due to study load")
         n2.text_area("Recommendations", key="ed_recs", height=220,
                      placeholder="e.g. Review hostel study and wake-up times to protect sleep")
+        if n1.button("↺ Refill findings from the data"):
+            ss["refill_findings"] = True
+            st.rerun()
+        if ss.get("findings_is_auto", True):
+            n1.caption("✨ Drafted automatically from your data — edit or add to it.")
     st.write("")
 
     # ---------- 3. Questions ----------
@@ -400,6 +435,11 @@ with tab_export:
                 ss.pop(ext, None)
             ss["report_signature"] = signature
 
+        if "notes" in sections and not (notes["findings"] or notes["recommendations"]):
+            st.warning("The **Key findings & recommendations** page will be left out because both boxes in "
+                       "section 2 are empty.")
+        elif "notes" not in sections:
+            st.info("The Key findings & recommendations page is switched off in **Pages to include**.")
         st.caption("The Interactive report is a web page that works on phones and computers, even offline: "
                    "tap any chart to see the exact numbers. No names or written answers are included.")
         EXPORTS = [
