@@ -13,7 +13,7 @@ from ppt_report import build_pptx
 st.set_page_config(page_title="Survey Analyser", layout="wide")
 st.title("Survey Analyser")
 
-# Bar colours. Questions containing these words are red by default.
+# Bar colours. Bars for questions containing these words are shown in red.
 BLUE, RED = "#2b6cb0", "#e53e3e"
 RED_DEFAULT_KEYWORDS = ["harsh form of punishment", "danger to myself"]
 
@@ -99,13 +99,13 @@ summary = pd.DataFrame({
     "No": [(df[c] == "No").sum() for c in yn_cols],
 }).round(1)
 
-# Questions shown with a red bar (in the app and in all downloaded reports)
-default_red = [q for q in yn_cols if any(k in q.lower() for k in RED_DEFAULT_KEYWORDS)]
-red_questions = st.multiselect("Highlight these questions in red", yn_cols, default=default_red)
-summary["Highlight"] = summary["Question"].isin(red_questions)
+# Questions whose bars are red (in the app and in the PDF / PowerPoint)
+summary["Highlight"] = summary["Question"].str.lower().apply(
+    lambda q: any(k in q for k in RED_DEFAULT_KEYWORDS))
+bar_colour = summary["Highlight"].map({True: "Red", False: "Blue"})
 
 fig = px.bar(summary, x="% Yes", y="Question", orientation="h", height=28 * len(yn_cols) + 100,
-             color="Highlight", color_discrete_map={True: RED, False: BLUE},
+             color=bar_colour, color_discrete_map={"Red": RED, "Blue": BLUE},
              category_orders={"Question": yn_cols})
 fig.update_layout(yaxis={"autorange": "reversed"}, showlegend=False)
 st.plotly_chart(fig, use_container_width=True)
