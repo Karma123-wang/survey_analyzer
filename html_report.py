@@ -6,7 +6,17 @@ from datetime import date
 
 import pandas as pd
 
-from pdf_report import kpi_items, pct_yes
+def pct_yes(s: pd.Series) -> float:
+    answered = s.isin(["Yes", "No"]).sum()
+    return (s == "Yes").sum() / answered * 100 if answered else 0.0
+
+
+def kpi_items(df, summary):
+    items = [(f"{len(df):,}", "Responses", False), (str(len(summary)), "Yes / No questions", False)]
+    if "Highlight" in summary:
+        for _, r in summary[summary["Highlight"]].head(3).iterrows():
+            items.append((f"{r['% Yes']:.0f}%", _clean(r["Question"]), True))
+    return items
 
 
 def _clean(q: str) -> str:
