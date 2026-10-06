@@ -67,6 +67,78 @@ def _draw_image(c: canvas.Canvas, img: ImageReader, top_offset: float = 85):
     c.drawImage(img, (PAGE_W - w) / 2, PAGE_H - top_offset - h, w, h)
 
 
+def pct_yes(s: pd.Series) -> float:
+    answered = s.isin(["Yes", "No"]).sum()
+    return (s == "Yes").sum() / answered * 100 if answered else 0.0
+
+
+def chart_slides(df, summary, cat_cols, group=None, chosen=None):
+    """Yield (title, subtitle, matplotlib figure) for each chart slide/page.
+    Shared by the PDF and PowerPoint reports so both always match."""
+    profile_cols = cat_cols[:6]
+    if profile_cols:
+        n = len(profile_cols)
+        ncols = 3 if n > 2 else n
+        nrows = (n + ncols - 1) // ncols
+        fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.4 * nrows), squeeze=False)
+        for ax, col in zip(axes.flat, profile_cols):
+            counts = df[col].value_counts().head(8)
+            ax.barh([_short(i, 22) for i in counts.index[::-1]], counts.values[::-1], color=ACCENT)
+            ax.set_title(col.rstrip(": "), fontsize=12, loc="left", color=INK)
+            for s in ["top", "right"]:
+                ax.spines[s].set_visible(False)
+            for i, v in enumerate(counts.values[::-1]):
+                ax.text(v, i, f" {v}", va="center", fontsize=9, color=MUTED)
+            ax.tick_params(labelsize=9)
+        for ax in list(axes.flat)[n:]:
+            ax.axis("off")
+        fig.tight_layout()
+        yield "Respondent profile", f"{len(df)} responses", fig
+
+    n_pages = max(1, -(-len(summary) // 12))  # at most 12 questions per page, spread evenly
+    per_page = max(1, -(-len(summary) // n_pages))
+    pages = [summary.iloc[i : i + per_page] for i in range(0, len(summary), per_page)]
+    for p, chunk in enumerate(pages, 1):
+        fig, ax = plt.subplots(figsize=(13, 0.55 * len(chunk) + 1))
+        labels = [_short(q, 70) for q in chunk["Question"]][::-1]
+        vals = chunk["% Yes"].values[::-1]
+        ax.barh(labels, vals, color=ACCENT)
+        ax.barh(labels, 100 - vals, left=vals, color="#e2e8f0")
+        for i, v in enumerate(vals):
+            ax.text(v + 1 if v < 85 else v - 1, i, f"{v:.0f}%", va="center",
+                    ha="left" if v < 85 else "right", fontsize=10,
+                    color=INK if v < 85 else "white", fontweight="bold")
+        ax.set_xlim(0, 100)
+        ax.set_xlabel("% answering Yes")
+        ax.tick_params(axis="y", labelsize=9)
+        for s in ["top", "right"]:
+            ax.spines[s].set_visible(False)
+        fig.tight_layout()
+        yield "Yes / No questions", f"Part {p} of {len(pages)} · % of respondents answering Yes", fig
+
+    if group and chosen:
+        table = df.groupby(group)[chosen].agg(pct_yes)
+        sizes = df.groupby(group).size()
+        groups = list(table.index)
+        fig, ax = plt.subplots(figsize=(13, max(3.5, 0.5 * len(chosen) * max(1, len(groups) / 2) + 1)))
+        bar_h = 0.8 / max(1, len(groups))
+        ypos = range(len(chosen))
+        for gi, g in enumerate(groups):
+            vals = [table.loc[g, q] for q in chosen]
+            ax.barh([y + gi * bar_h for y in ypos], vals, height=bar_h,
+                    color=PALETTE[gi % len(PALETTE)], label=f"{g} (n={sizes[g]})")
+        ax.set_yticks([y + bar_h * (len(groups) - 1) / 2 for y in ypos])
+        ax.set_yticklabels([_short(q, 60) for q in chosen], fontsize=9)
+        ax.invert_yaxis()
+        ax.set_xlim(0, 100)
+        ax.set_xlabel("% answering Yes")
+        ax.legend(loc="lower right", fontsize=9, frameon=False)
+        for s in ["top", "right"]:
+            ax.spines[s].set_visible(False)
+        fig.tight_layout()
+        yield f"Comparison by {group.rstrip(': ')}", "% answering Yes in each group", fig
+
+
 def build_pdf(
     df: pd.DataFrame,
     report_title: str,
@@ -117,76 +189,8 @@ def build_pdf(
     c.showPage()
 
     # ---- Respondent profile ----
-    profile_cols = cat_cols[:6]
-    if profile_cols:
-        n = len(profile_cols)
-        ncols = 3 if n > 2 else n
-        nrows = (n + ncols - 1) // ncols
-        fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.4 * nrows), squeeze=False)
-        for ax, col in zip(axes.flat, profile_cols):
-            counts = df[col].value_counts().head(8)
-            ax.barh([_short(i, 22) for i in counts.index[::-1]], counts.values[::-1], color=ACCENT)
-            ax.set_title(col.rstrip(": "), fontsize=12, loc="left", color=INK)
-            for s in ["top", "right"]:
-                ax.spines[s].set_visible(False)
-            for i, v in enumerate(counts.values[::-1]):
-                ax.text(v, i, f" {v}", va="center", fontsize=9, color=MUTED)
-            ax.tick_params(labelsize=9)
-        for ax in list(axes.flat)[n:]:
-            ax.axis("off")
-        fig.tight_layout()
-        _page(c, "Respondent profile", f"{len(df)} responses", footer)
-        _draw_image(c, _fig_to_image(fig))
-        c.showPage()
-
-    # ---- Yes/No results, 12 questions per page ----
-    n_pages = max(1, -(-len(summary) // 12))  # at most 12 questions per page, spread evenly
-    per_page = -(-len(summary) // n_pages)
-    pages = [summary.iloc[i : i + per_page] for i in range(0, len(summary), per_page)]
-    for p, chunk in enumerate(pages, 1):
-        fig, ax = plt.subplots(figsize=(13, 0.55 * len(chunk) + 1))
-        labels = [_short(q, 70) for q in chunk["Question"]][::-1]
-        vals = chunk["% Yes"].values[::-1]
-        ax.barh(labels, vals, color=ACCENT)
-        ax.barh(labels, 100 - vals, left=vals, color="#e2e8f0")
-        for i, v in enumerate(vals):
-            ax.text(v + 1 if v < 85 else v - 1, i, f"{v:.0f}%", va="center",
-                    ha="left" if v < 85 else "right", fontsize=10,
-                    color=INK if v < 85 else "white", fontweight="bold")
-        ax.set_xlim(0, 100)
-        ax.set_xlabel("% answering Yes")
-        ax.tick_params(axis="y", labelsize=9)
-        for s in ["top", "right"]:
-            ax.spines[s].set_visible(False)
-        fig.tight_layout()
-        _page(c, "Yes / No questions", f"Part {p} of {len(pages)} · % of respondents answering Yes", footer)
-        _draw_image(c, _fig_to_image(fig))
-        c.showPage()
-
-    # ---- Group comparison ----
-    if group and chosen:
-        table = df.groupby(group)[chosen].agg(
-            lambda s: (s == "Yes").sum() / max(1, s.isin(["Yes", "No"]).sum()) * 100)
-        sizes = df.groupby(group).size()
-        table = table[sizes >= 1]
-        groups = list(table.index)
-        fig, ax = plt.subplots(figsize=(13, max(3.5, 0.5 * len(chosen) * max(1, len(groups) / 2) + 1)))
-        bar_h = 0.8 / max(1, len(groups))
-        ypos = range(len(chosen))
-        for gi, g in enumerate(groups):
-            vals = [table.loc[g, q] for q in chosen]
-            ax.barh([y + gi * bar_h for y in ypos], vals, height=bar_h,
-                    color=PALETTE[gi % len(PALETTE)], label=f"{g} (n={sizes[g]})")
-        ax.set_yticks([y + bar_h * (len(groups) - 1) / 2 for y in ypos])
-        ax.set_yticklabels([_short(q, 60) for q in chosen], fontsize=9)
-        ax.invert_yaxis()
-        ax.set_xlim(0, 100)
-        ax.set_xlabel("% answering Yes")
-        ax.legend(loc="lower right", fontsize=9, frameon=False)
-        for s in ["top", "right"]:
-            ax.spines[s].set_visible(False)
-        fig.tight_layout()
-        _page(c, f"Comparison by {group.rstrip(': ')}", "% answering Yes in each group", footer)
+    for title, subtitle, fig in chart_slides(df, summary, cat_cols, group, chosen):
+        _page(c, title, subtitle, footer)
         _draw_image(c, _fig_to_image(fig))
         c.showPage()
 
