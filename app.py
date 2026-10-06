@@ -13,6 +13,10 @@ from ppt_report import build_pptx
 st.set_page_config(page_title="Survey Analyser", layout="wide")
 st.title("Survey Analyser")
 
+# Bar colours. Questions containing these words are red by default.
+BLUE, RED = "#2b6cb0", "#e53e3e"
+RED_DEFAULT_KEYWORDS = ["harsh form of punishment", "danger to myself"]
+
 # Columns that identify a person - never shown in results
 PRIVATE_EXACT = {"name", "name:", "timestamp", "si.no", "sl.no", "cid", "phone", "email"}
 PRIVATE_WORDS = ["address", "please write the name"]
@@ -94,10 +98,18 @@ summary = pd.DataFrame({
     "Yes": [(df[c] == "Yes").sum() for c in yn_cols],
     "No": [(df[c] == "No").sum() for c in yn_cols],
 }).round(1)
-fig = px.bar(summary, x="% Yes", y="Question", orientation="h", height=28 * len(yn_cols) + 100)
-fig.update_layout(yaxis={"autorange": "reversed"})
+
+# Questions shown with a red bar (in the app and in all downloaded reports)
+default_red = [q for q in yn_cols if any(k in q.lower() for k in RED_DEFAULT_KEYWORDS)]
+red_questions = st.multiselect("Highlight these questions in red", yn_cols, default=default_red)
+summary["Highlight"] = summary["Question"].isin(red_questions)
+
+fig = px.bar(summary, x="% Yes", y="Question", orientation="h", height=28 * len(yn_cols) + 100,
+             color="Highlight", color_discrete_map={True: RED, False: BLUE},
+             category_orders={"Question": yn_cols})
+fig.update_layout(yaxis={"autorange": "reversed"}, showlegend=False)
 st.plotly_chart(fig, use_container_width=True)
-st.dataframe(summary, use_container_width=True, hide_index=True)
+st.dataframe(summary.drop(columns="Highlight"), use_container_width=True, hide_index=True)
 
 # ---------- 5. Compare groups ----------
 st.header("Compare groups")
@@ -134,21 +146,18 @@ st.caption("Reports include the profile, all Yes/No results, and the group compa
 filters_text = "Filters: " + "; ".join(active_filters) if active_filters else "All respondents (no filters)"
 report_args = (df, pdf_title, summary, cat_cols, filters_text, group, chosen)
 
-col_pdf, col_ppt = st.columns(2)
-with col_pdf:
-    if st.button("Create PDF report", use_container_width=True):
-        with st.spinner("Building PDF..."):
-            st.session_state["pdf"] = build_pdf(*report_args)
-    if "pdf" in st.session_state:
-        st.download_button("Download PDF", st.session_state["pdf"], f"{pdf_title}.pdf",
-                           "application/pdf", use_container_width=True)
-with col_ppt:
-    if st.button("Create PowerPoint", use_container_width=True):
-        with st.spinner("Building PowerPoint..."):
-            st.session_state["pptx"] = build_pptx(*report_args)
-    if "pptx" in st.session_state:
-        st.download_button("Download PowerPoint", st.session_state["pptx"], f"{pdf_title}.pptx",
-                           "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                           use_container_width=True)
+EXPORTS = [
+    ("PDF", build_pdf, "pdf", "application/pdf"),
+    ("PowerPoint", build_pptx, "pptx",
+     "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+]
+for col, (label, builder, ext, mime) in zip(st.columns(len(EXPORTS)), EXPORTS):
+    with col:
+        if st.button(f"Create {label}", use_container_width=True):
+            with st.spinner(f"Building {label}..."):
+                st.session_state[ext] = builder(*report_args)
+        if ext in st.session_state:
+            st.download_button(f"Download {label}", st.session_state[ext], f"{pdf_title}.{ext}",
+                               mime, use_container_width=True)
 
-st.download_button("Download Yes/No summary (CSV)", summary.to_csv(index=False), "summary.csv")
+st.download_button("Download Yes/No summary (CSV)", summary.drop(columns="Highlight").to_csv(index=False), "summary.csv")
