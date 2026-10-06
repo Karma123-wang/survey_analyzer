@@ -1,6 +1,6 @@
 """
 Survey Analyser - upload a Google Forms / Excel survey export and get instant analysis.
-Run:  pip install streamlit pandas openpyxl plotly matplotlib reportlab
+Run:  pip install streamlit pandas openpyxl plotly matplotlib reportlab python-pptx
       streamlit run app.py
 """
 import pandas as pd
@@ -8,6 +8,7 @@ import plotly.express as px
 import streamlit as st
 
 from pdf_report import build_pdf
+from ppt_report import build_pptx
 
 st.set_page_config(page_title="Survey Analyser", layout="wide")
 st.title("Survey Analyser")
@@ -128,12 +129,26 @@ if text_cols:
 # ---------- 7. Download ----------
 st.header("Download")
 pdf_title = st.text_input("Report title", f"Survey Report – {report_name}")
-st.caption("The PDF includes the profile, all Yes/No results, and the group comparison you selected above. "
+st.caption("Reports include the profile, all Yes/No results, and the group comparison you selected above. "
            "No names or written answers are included.")
-if st.button("Create PDF report"):
-    with st.spinner("Building PDF..."):
-        filters_text = "Filters: " + "; ".join(active_filters) if active_filters else "All respondents (no filters)"
-        st.session_state["pdf"] = build_pdf(df, pdf_title, summary, cat_cols, filters_text, group, chosen)
-if "pdf" in st.session_state:
-    st.download_button("Download PDF", st.session_state["pdf"], f"{pdf_title}.pdf", "application/pdf")
+filters_text = "Filters: " + "; ".join(active_filters) if active_filters else "All respondents (no filters)"
+report_args = (df, pdf_title, summary, cat_cols, filters_text, group, chosen)
+
+col_pdf, col_ppt = st.columns(2)
+with col_pdf:
+    if st.button("Create PDF report", use_container_width=True):
+        with st.spinner("Building PDF..."):
+            st.session_state["pdf"] = build_pdf(*report_args)
+    if "pdf" in st.session_state:
+        st.download_button("Download PDF", st.session_state["pdf"], f"{pdf_title}.pdf",
+                           "application/pdf", use_container_width=True)
+with col_ppt:
+    if st.button("Create PowerPoint", use_container_width=True):
+        with st.spinner("Building PowerPoint..."):
+            st.session_state["pptx"] = build_pptx(*report_args)
+    if "pptx" in st.session_state:
+        st.download_button("Download PowerPoint", st.session_state["pptx"], f"{pdf_title}.pptx",
+                           "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                           use_container_width=True)
+
 st.download_button("Download Yes/No summary (CSV)", summary.to_csv(index=False), "summary.csv")
