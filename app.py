@@ -1,11 +1,13 @@
 """
 Survey Analyser - upload a Google Forms / Excel survey export and get instant analysis.
-Run:  pip install streamlit pandas openpyxl plotly
+Run:  pip install streamlit pandas openpyxl plotly matplotlib reportlab
       streamlit run app.py
 """
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+from pdf_report import build_pdf
 
 st.set_page_config(page_title="Survey Analyser", layout="wide")
 st.title("Survey Analyser")
@@ -25,6 +27,12 @@ def is_yes_no(series: pd.Series) -> bool:
     return 0 < len(vals) <= 2 and vals <= {"Yes", "No"}
 
 
+def pct_yes(s: pd.Series) -> float:
+    """% Yes among people who answered (blank answers are ignored)."""
+    answered = s.isin(["Yes", "No"]).sum()
+    return (s == "Yes").sum() / answered * 100 if answered else 0.0
+
+
 def is_category(series: pd.Series) -> bool:
     return 1 < series.nunique() <= 12 and not is_yes_no(series)
 
@@ -41,6 +49,7 @@ else:
     xls = pd.ExcelFile(file)
     sheet = st.selectbox("Sheet", xls.sheet_names)
     df = pd.read_excel(xls, sheet_name=sheet)
+report_name = sheet if not file.name.endswith(".csv") else file.name.rsplit(".", 1)[0]
 
 df = df.dropna(how="all")
 df.columns = [str(c).strip() for c in df.columns]
@@ -54,10 +63,13 @@ cat_cols = [c for c in usable if is_category(df[c])]
 
 # ---------- 2. Filters ----------
 st.sidebar.header("Filters")
+active_filters = []
 for c in cat_cols[:6]:
     opts = sorted(df[c].dropna().unique())
     pick = st.sidebar.multiselect(c, opts, default=opts)
     df = df[df[c].isin(pick)]
+    if len(pick) < len(opts):
+        active_filters.append(f"{c.rstrip(': ')}: {', '.join(map(str, pick))}")
 
 st.metric("Responses", len(df))
 if df.empty:
@@ -77,7 +89,7 @@ for i, c in enumerate(cat_cols):
 st.header("Yes / No questions")
 summary = pd.DataFrame({
     "Question": yn_cols,
-    "% Yes": [(df[c] == "Yes").mean() * 100 for c in yn_cols],
+    "% Yes": [pct_yes(df[c]) for c in yn_cols],
     "Yes": [(df[c] == "Yes").sum() for c in yn_cols],
     "No": [(df[c] == "No").sum() for c in yn_cols],
 }).round(1)
@@ -88,11 +100,12 @@ st.dataframe(summary, use_container_width=True, hide_index=True)
 
 # ---------- 5. Compare groups ----------
 st.header("Compare groups")
+group, chosen = None, []
 if cat_cols and yn_cols:
     group = st.selectbox("Break down by", cat_cols)
     chosen = st.multiselect("Questions", yn_cols, default=yn_cols[:5])
     if chosen:
-        table = df.groupby(group)[chosen].apply(lambda g: (g == "Yes").mean() * 100).round(0)
+        table = df.groupby(group)[chosen].agg(pct_yes).round(0)
         table["n"] = df.groupby(group).size()
         st.dataframe(table, use_container_width=True)
         long = table.drop(columns="n").reset_index().melt(id_vars=group, var_name="Question", value_name="% Yes")
@@ -113,4 +126,14 @@ if text_cols:
     st.dataframe(answers.reset_index(drop=True), use_container_width=True)
 
 # ---------- 7. Download ----------
+st.header("Download")
+pdf_title = st.text_input("Report title", f"Survey Report – {report_name}")
+st.caption("The PDF includes the profile, all Yes/No results, and the group comparison you selected above. "
+           "No names or written answers are included.")
+if st.button("Create PDF report"):
+    with st.spinner("Building PDF..."):
+        filters_text = "Filters: " + "; ".join(active_filters) if active_filters else "All respondents (no filters)"
+        st.session_state["pdf"] = build_pdf(df, pdf_title, summary, cat_cols, filters_text, group, chosen)
+if "pdf" in st.session_state:
+    st.download_button("Download PDF", st.session_state["pdf"], f"{pdf_title}.pdf", "application/pdf")
 st.download_button("Download Yes/No summary (CSV)", summary.to_csv(index=False), "summary.csv")
