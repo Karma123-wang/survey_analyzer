@@ -10,6 +10,7 @@ import streamlit as st
 
 from pdf_report import build_pdf
 from ppt_report import build_pptx
+from html_report import build_html
 
 st.set_page_config(page_title="Survey Analyser", page_icon="📊", layout="wide")
 
@@ -29,10 +30,11 @@ st.markdown(f"""
   div[class*="st-key-card"] {{
       background: #FFFFFF; border-radius: 6px; padding: 14px 16px 6px 16px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.12); }}
-  .pbi-header {{ background: #252423; color: #FFFFFF; padding: 14px 22px; border-radius: 6px;
+  .pbi-header {{ background: {BLUE}; color: #FFFFFF; padding: 14px 22px; border-radius: 6px;
+      border-left: 6px solid #12239E;
       margin-bottom: 14px; font-family: {FONT}; }}
   .pbi-header h1 {{ font-size: 24px; margin: 0; color: #FFFFFF; font-weight: 600; }}
-  .pbi-header p {{ margin: 2px 0 0 0; color: #C8C6C4; font-size: 13px; }}
+  .pbi-header p {{ margin: 2px 0 0 0; color: #E3F1FF; font-size: 13px; }}
   .kpi {{ background: #FFFFFF; border-radius: 6px; padding: 14px 16px; height: 118px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.12); border-top: 4px solid {BLUE}; font-family: {FONT}; }}
   .kpi.red {{ border-top-color: {RED}; }}
@@ -225,16 +227,22 @@ with tab_compare:
             table = df.groupby(group)[chosen].agg(pct_yes).round(0)
             sizes = df.groupby(group).size()
             long = table.reset_index().melt(id_vars=group, var_name="Question", value_name="% Yes")
-            long["Question"] = long["Question"].map(lambda q: short(q, 45))
+            long["Question"] = long["Question"].map(lambda q: short(q, 60))
             long[group] = long[group].astype(str) + " (n=" + long[group].map(sizes).astype(str) + ")"
             with st.container(key="card_compare"):
                 card_title(f"% answering Yes by {group.rstrip(': ')}")
-                fig = px.bar(long, x="Question", y="% Yes", color=group, barmode="group", text="% Yes",
-                             color_discrete_sequence=PBI_COLOURS)
+                n_groups = long[group].nunique()
+                fig = px.bar(long, y="Question", x="% Yes", color=group, barmode="group", orientation="h",
+                             text="% Yes", color_discrete_sequence=PBI_COLOURS,
+                             category_orders={"Question": list(dict.fromkeys(long["Question"]))})
                 fig.update_traces(texttemplate="%{text:.0f}%", textposition="outside", cliponaxis=False)
-                fig.update_yaxes(range=[0, 110], ticksuffix="%", showgrid=True, gridcolor="#EDEBE9")
-                fig.update_xaxes(showgrid=False)
-                st.plotly_chart(pbi_style(fig, 460), use_container_width=True)
+                fig.update_layout(bargap=0.3, bargroupgap=0.12)  # space between questions and between bars
+                fig.update_xaxes(range=[0, 112], ticksuffix="%")
+                fig.update_yaxes(autorange="reversed")  # first question at the top
+                fig = pbi_style(fig, max(320, len(chosen) * (28 * n_groups + 40) + 90))
+                fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, title_text=""),
+                                  margin=dict(l=10, r=30, t=40, b=10))
+                st.plotly_chart(fig, use_container_width=True)
 
 # ---- Written reasons ----
 with tab_text:
@@ -257,6 +265,8 @@ with tab_text:
 with tab_export:
     with st.container(key="card_export"):
         pdf_title = st.text_input("Report title", f"Survey Report – {report_name}")
+        st.caption("The Interactive report is a web page that works on phones and computers, even offline: "
+                   "tap any chart to see the exact numbers. ")
         st.caption("Reports include the profile, all Yes/No results, and the group comparison chosen in "
                    "'Compare groups'. No names or written answers are included.")
         report_args = (df, pdf_title, summary, cat_cols, filters_text, group, chosen)
@@ -264,6 +274,7 @@ with tab_export:
             ("PDF", build_pdf, "pdf", "application/pdf"),
             ("PowerPoint", build_pptx, "pptx",
              "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+            ("Interactive report", build_html, "html", "text/html"),
         ]
         for col, (label, builder, ext, mime) in zip(st.columns(len(EXPORTS)), EXPORTS):
             with col:
