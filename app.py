@@ -67,7 +67,13 @@ def pct_yes(s: pd.Series) -> float:
     return (s == "Yes").sum() / answered * 100 if answered else 0.0
 
 
+# Written-answer questions (never treated as groups, even in small surveys)
+TEXT_WORDS = ["reason", "specify", "please write", "write the name", "if yes", "if you selected"]
+
+
 def is_category(series: pd.Series) -> bool:
+    if any(w in str(series.name).lower() for w in TEXT_WORDS):
+        return False
     return 1 < series.nunique() <= 12 and not is_yes_no(series)
 
 
@@ -187,7 +193,7 @@ with tab_overview:
                                       hovertemplate="%{label}: %{value} (%{percent})<extra></extra>")
                     fig.add_annotation(text=f"<b>{counts['Count'].sum()}</b>", showarrow=False,
                                        font=dict(size=20, family=FONT))
-                    st.plotly_chart(pbi_style(fig, 300), use_container_width=True)
+                    st.plotly_chart(pbi_style(fig, 300), use_container_width=True, key=f"donut_{row_start + i}")
         st.write("")
 
 # ---- Yes / No results: stacked Yes vs No bars ----
@@ -208,7 +214,7 @@ with tab_yesno:
         fig.update_layout(barmode="stack", bargap=0.25, showlegend=True)
         fig.update_yaxes(autorange="reversed", categoryorder="array", categoryarray=labels)
         fig.update_xaxes(range=[0, 100], ticksuffix="%")
-        st.plotly_chart(pbi_style(fig, 34 * len(labels) + 80), use_container_width=True)
+        st.plotly_chart(pbi_style(fig, 34 * len(labels) + 80), use_container_width=True, key="chart_yesno")
     st.write("")
     with st.container(key="card_table"):
         card_title("Table")
@@ -242,11 +248,12 @@ with tab_compare:
                 fig = pbi_style(fig, max(320, len(chosen) * (28 * n_groups + 40) + 90))
                 fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, title_text=""),
                                   margin=dict(l=10, r=30, t=40, b=10))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key="chart_compare")
 
 # ---- Written reasons ----
 with tab_text:
-    text_cols = [c for c in usable if c not in yn_cols and c not in cat_cols and df[c].nunique() > 12]
+    text_cols = [c for c in usable if c not in yn_cols and c not in cat_cols
+                 and (df[c].nunique() > 12 or any(w in c.lower() for w in TEXT_WORDS))]
     if text_cols:
         with st.container(key="card_text"):
             tc = st.selectbox("Question", text_cols, format_func=lambda c: short(c, 100))
@@ -270,6 +277,12 @@ with tab_export:
         st.caption("Reports include the profile, all Yes/No results, and the group comparison chosen in "
                    "'Compare groups'. No names or written answers are included.")
         report_args = (df, pdf_title, summary, cat_cols, filters_text, group, chosen)
+        # Forget reports made for a different sheet, filter or comparison
+        signature = (file.name, report_name, filters_text, pdf_title, group, tuple(chosen or []))
+        if st.session_state.get("report_signature") != signature:
+            for ext in ("pdf", "pptx", "html"):
+                st.session_state.pop(ext, None)
+            st.session_state["report_signature"] = signature
         EXPORTS = [
             ("PDF", build_pdf, "pdf", "application/pdf"),
             ("PowerPoint", build_pptx, "pptx",
