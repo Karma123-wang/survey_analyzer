@@ -43,7 +43,7 @@ PAGE_W, PAGE_H = landscape(A4)
 MARGIN = 28
 
 
-ALL_SECTIONS = ["summary", "notes", "profile", "yesno", "compare"]
+ALL_SECTIONS = ["summary", "notes", "focus", "profile", "yesno", "compare"]
 
 
 def responses_line(df, filters_text: str) -> str:
@@ -81,6 +81,67 @@ def _clean_axes(ax, xgrid=True):
         ax.set_axisbelow(True)
 
 
+
+ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10, "XI": 11,
+         "XII": 12, "PP": 0}
+
+
+def _natural_key(v):
+    """Sort classes (IX, X, XI…) and ages numerically, everything else alphabetically."""
+    s = str(v).strip().upper()
+    if s in ROMAN:
+        return (0, ROMAN[s], s)
+    try:
+        return (0, float(s), s)
+    except ValueError:
+        return (1, 0, s)
+
+
+def focus_groups(cat_cols):
+    """Pick the Class, Age and Sex columns (in that order) for the red-indicator focus pages."""
+    picked = []
+    for words in (["class", "grade"], ["age"], ["sex", "gender"]):
+        for c in cat_cols:
+            if any(w in c.lower() for w in words) and c not in picked:
+                picked.append(c)
+                break
+    return picked or list(cat_cols[:3])
+
+
+def focus_figure(df, question_col, label, groups):
+    """One panel per group column: % (and number) answering Yes in each group."""
+    answered = df[question_col].isin(["Yes", "No"])
+    n_yes = int((df[question_col] == "Yes").sum())
+    fig, axes = plt.subplots(1, len(groups), figsize=(5.2 * len(groups), 5.6), squeeze=False)
+    for ax, g in zip(axes[0], groups):
+        sub = df[answered & df[g].notna()]
+        tab = sub.groupby(g)[question_col].agg(n="size", yes=lambda s: (s == "Yes").sum())
+        tab = tab[tab["n"] > 0]
+        tab = tab.loc[sorted(tab.index, key=_natural_key)]
+        pct = tab["yes"] / tab["n"] * 100
+        names = [str(i) for i in tab.index][::-1]
+        ax.barh(names, [100] * len(names), color=NO_GREY, height=0.6)
+        ax.barh(names, pct.values[::-1], color=HIGHLIGHT, height=0.6)
+        most = tab["yes"].max()
+        for i, (y, n, p) in enumerate(zip(tab["yes"].values[::-1], tab["n"].values[::-1], pct.values[::-1])):
+            small = n < 10
+            ax.text(101, i, f"{y} of {n}  ({p:.0f}%)" + ("  small group" if small else ""), va="center",
+                    fontsize=9.5 if not small else 8.5, color=MUTED if small else (HIGHLIGHT if y == most and y > 0 else INK),
+                    fontweight="bold" if y == most and y > 0 else "normal")
+        overall = n_yes / max(1, int(answered.sum())) * 100
+        ax.axvline(overall, color=INK, linestyle="--", linewidth=1)
+        ax.set_xlim(0, 150)
+        ax.set_xticks([0, 25, 50, 75, 100])
+        ax.xaxis.set_major_formatter(mticker.PercentFormatter())
+        ax.set_title(f"By {g.rstrip(': ').lower()}", loc="left", fontsize=12, fontweight="bold", color=INK)
+        _clean_axes(ax, xgrid=False)
+        ax.tick_params(axis="y", labelsize=9.5)
+    fig.text(0.01, 0.005, f"Red bar = % answering Yes in each group · dashed line = whole school ({overall:.0f}%) · "
+                          f"bold red = most students · grey = fewer than 10 students (interpret with care)",
+             fontsize=9, color=MUTED)
+    fig.tight_layout(w_pad=2.5, rect=(0, 0.03, 1, 1))
+    return fig, n_yes, int(answered.sum())
+
 # ---------------- Charts (shared by PDF and PowerPoint) ----------------
 
 def chart_slides(df, summary, cat_cols, group=None, chosen=None, sections=None):
@@ -110,6 +171,23 @@ def chart_slides(df, summary, cat_cols, group=None, chosen=None, sections=None):
             ax.axis("off")
         fig.tight_layout(w_pad=3)
         yield "Respondent profile", f"{len(df)} responses", fig
+
+    # ---- Focus pages: each red (key) indicator by class, age and sex ----
+    if "focus" in secs and "Highlight" in summary:
+        groups = focus_groups(cat_cols)
+        for _, r in summary[summary["Highlight"]].iterrows():
+            qcol = r["Original"] if "Original" in summary else r["Question"]
+            if qcol not in df.columns or not groups:
+                continue
+            fig, n_yes, n_ans = focus_figure(df, qcol, r["Question"], groups)
+            title = _one_line(r["Question"])
+            fig.suptitle("\n".join(textwrap.wrap(f"“{title}”", 120)), x=0.01, ha="left", fontsize=12.5,
+                         fontweight="bold", color=HIGHLIGHT)
+            fig.tight_layout(w_pad=2.5, rect=(0, 0.03, 1, 0.9 if len(title) > 120 else 0.93))
+            short = title if len(title) <= 58 else title[:57].rsplit(" ", 1)[0] + "…"
+            yield ("Focus: " + short,
+                   f"{n_yes} of {n_ans} students ({n_yes / max(1, n_ans) * 100:.0f}%) answered Yes · "
+                   f"by {', '.join(g.rstrip(': ').lower() for g in groups)}", fig)
 
     # ---- Yes / No: 100% stacked bars ----
     if "yesno" not in secs or summary.empty:

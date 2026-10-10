@@ -13,6 +13,7 @@ import streamlit as st
 from pdf_report import build_pdf
 from ppt_report import build_pptx
 from html_report import build_html
+from followup import build_followup_xlsx, followup_table, identity_columns
 
 st.set_page_config(page_title="Survey Analyser", page_icon="📊", layout="wide")
 
@@ -273,7 +274,8 @@ with tab_text:
         st.info("No written-answer columns found.")
 
 # ---- Edit & export ----
-SECTION_LABELS = {"summary": "Summary", "notes": "Key findings & recommendations", "profile": "Respondent profile",
+SECTION_LABELS = {"summary": "Summary", "notes": "Key findings & recommendations",
+                  "focus": "Focus on red indicators (by class, age, sex)", "profile": "Respondent profile",
                   "yesno": "Yes / No results", "compare": "Comparison"}
 
 
@@ -464,3 +466,34 @@ with tab_export:
         c2.download_button("Download Yes/No summary (CSV)",
                            summary_out.drop(columns=["Highlight", "Original"]).to_csv(index=False), "summary.csv",
                            use_container_width=True)
+
+    # ---------- 5. Confidential follow-up list (counsellor only) ----------
+    st.write("")
+    with st.container(key="card_followup"):
+        card_title("5 · 🔒 Confidential follow-up list – for the counsellor only")
+        red_qs = {r["Original"]: r["Question"] for _, r in summary_out[summary_out["Highlight"]].iterrows()}
+        if not red_qs:
+            st.info("No questions are marked with a red bar (section 3), so there is no follow-up list.")
+        else:
+            fl = followup_table(df, red_qs)
+            ids = identity_columns(df)
+            missing = [k for k in ("Name", "Class", "Age") if ids.get(k) is None]
+            st.markdown(
+                f"**{len(fl)} students** answered Yes to at least one red indicator "
+                f"({int((fl['Number of red indicators'] > 1).sum()) if len(fl) else 0} to more than one). "
+                "The list gives their name, class, section, age, which red questions they answered Yes to, and "
+                "their written reason, sorted so students with the most red answers come first.")
+            st.warning("This list identifies children who reported self-harm risk or harsh punishment. It is **not** "
+                       "part of the PDF, PowerPoint or Interactive report. Use it only for private, supportive "
+                       "follow-up by the counsellor – do not show it in presentations or meetings, and store it "
+                       "securely.")
+            if missing:
+                st.caption("Could not find these columns in the file: " + ", ".join(missing))
+            agree = st.checkbox("I am the counsellor (or authorised staff) and will keep this list confidential",
+                                key="followup_ok")
+            if agree and len(fl):
+                st.download_button("🔒 Download confidential follow-up list (Excel)",
+                                   build_followup_xlsx(fl, f"{ss['ed_role'] or report_name}",
+                                                       ss["ed_author"]),
+                                   f"CONFIDENTIAL follow-up list - {report_name}.xlsx",
+                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
