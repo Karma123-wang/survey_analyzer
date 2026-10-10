@@ -26,7 +26,24 @@ def _clean(q: str) -> str:
     return t
 
 
-ALL_SECTIONS = ["summary", "notes", "profile", "yesno", "compare"]
+ALL_SECTIONS = ["summary", "notes", "focus", "profile", "yesno", "compare"]
+
+
+def _focus(df, summary, cat_cols):
+    """Class / age / sex breakdown of each red indicator (same numbers as the PDF focus pages)."""
+    try:
+        from pdf_report import focus_data, focus_groups
+    except ImportError:          # older pdf_report.py without focus support
+        return []
+    if "Highlight" not in summary:
+        return []
+    groups = focus_groups(cat_cols)
+    out = []
+    for _, r in summary[summary["Highlight"]].iterrows():
+        qcol = r["Original"] if "Original" in summary else r["Question"]
+        if qcol in df.columns and groups:
+            out.append({"q": _clean(r["Question"]), **focus_data(df, qcol, groups)})
+    return out
 
 
 def build_html(df, report_title, summary, cat_cols, filters_text, group=None, chosen=None,
@@ -35,6 +52,7 @@ def build_html(df, report_title, summary, cat_cols, filters_text, group=None, ch
     label_of = dict(zip(summary["Original"], summary["Question"])) if "Original" in summary else {}
     data = {
         "sections": secs,
+        "focus": _focus(df, summary, cat_cols) if "focus" in secs else [],
         "notes": {"findings": list((notes or {}).get("findings") or []),
                   "recommendations": list((notes or {}).get("recommendations") or [])},
         "title": report_title,
@@ -149,6 +167,17 @@ h2{font-size:18px;margin:6px 0 10px}
 .notes .card{border-top:4px solid var(--blue)}.notes .card.rec{border-top-color:var(--navy)}
 .notes h3{margin:0 0 10px;font-size:16px}.notes ol,.notes ul{margin:0;padding-left:20px}
 .notes li{margin:0 0 8px;line-height:1.45;font-size:14.5px}
+.fcard{background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.12);border-top:4px solid var(--red);padding:16px;margin-bottom:14px}
+.fcard h3{margin:0 0 4px;font-size:16px;color:var(--red);line-height:1.35}
+.fcard .fsum{font-size:13.5px;color:var(--muted);margin-bottom:12px}.fcard .fsum b{color:var(--ink);font-size:18px}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
+.fgrid h4{margin:0 0 6px;font-size:13.5px}
+.frow{display:grid;grid-template-columns:62px 1fr 108px;gap:8px;align-items:center;padding:3px 2px;border-radius:4px;cursor:pointer}
+.frow:hover{background:#FDF2F3}.frow .lab{font-size:12.5px;text-align:right}
+.frow .trk{height:16px;background:var(--no);border-radius:3px;overflow:hidden;position:relative}
+.frow .fil{height:100%;background:var(--red);width:0;transition:width .5s ease}
+.frow .ovl{position:absolute;top:-2px;bottom:-2px;border-left:1.5px dashed var(--ink)}
+.frow .num{font-size:12px}.frow.most .num{color:var(--red);font-weight:700}.frow.small{opacity:.55}
 #tip{position:fixed;z-index:20;pointer-events:none;background:#252423;color:#fff;font-size:13px;line-height:1.4;padding:9px 11px;border-radius:6px;max-width:280px;box-shadow:0 4px 14px rgba(0,0,0,.25);opacity:0;transition:opacity .12s}
 #tip.show{opacity:1}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:10px 0 24px}
@@ -156,10 +185,11 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px 0 24px}
 </style></head>
 <body>
 <header><h1 id="t"></h1><p id="sub"></p></header>
-<nav><a href="#summary">Summary</a><a href="#notes">Findings</a><a href="#profile">Respondent profile</a><a href="#yesno">Yes / No results</a><a href="#compare" id="navcmp">Comparison</a></nav>
+<nav><a href="#summary">Summary</a><a href="#notes">Findings</a><a href="#focus">Focus</a><a href="#profile">Respondent profile</a><a href="#yesno">Yes / No results</a><a href="#compare" id="navcmp">Comparison</a></nav>
 <main>
 <section id="summary"><h2>Summary</h2><div class="kpis" id="kpis"></div></section>
 <section id="notes"><h2>Key findings &amp; recommendations</h2><div class="notes" id="notesBox"></div></section>
+<section id="focus"><h2>Focus on key indicators</h2><p class="hint">Each red indicator by class, age and sex. Tap a bar for the numbers. Bold red = most students · grey = fewer than 10 students.</p><div id="focusBox"></div></section>
 <section id="profile"><h2>Respondent profile</h2><p class="hint">Tap a slice or a legend item to see the numbers.</p><div class="donuts" id="donuts"></div></section>
 <section id="yesno"><h2>Yes / No results</h2>
  <div class="card">
@@ -208,7 +238,7 @@ document.addEventListener("click", hideTip);
 window.addEventListener("scroll", hideTip, {passive:true});
 
 /* ---------- Sections chosen in the app ---------- */
-const NAV = {summary:"summary", notes:"notes", profile:"profile", yesno:"yesno", compare:"compare"};
+const NAV = {summary:"summary", notes:"notes", focus:"focus", profile:"profile", yesno:"yesno", compare:"compare"};
 Object.keys(NAV).forEach(k => { if (!D.sections.includes(k)) {
   $("#" + NAV[k]).style.display = "none";
   const a = document.querySelector(`nav a[href="#${NAV[k]}"]`); if (a) a.style.display = "none"; } });
@@ -217,6 +247,22 @@ Object.keys(NAV).forEach(k => { if (!D.sections.includes(k)) {
   $("#notesBox").innerHTML =
     (F.length ? `<div class="card"><h3>Key findings</h3><ul>${F.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "") +
     (R.length ? `<div class="card rec"><h3>Recommendations</h3><ol>${R.map(x => `<li>${esc(x)}</li>`).join("")}</ol></div>` : ""); }
+
+/* ---------- Focus on key (red) indicators ---------- */
+if (!D.focus.length) { $("#focus").style.display = "none"; const a = document.querySelector('nav a[href="#focus"]'); if (a) a.style.display = "none"; }
+D.focus.forEach(f => {
+  const card = document.createElement("div"); card.className = "fcard";
+  card.innerHTML = `<h3>“${esc(f.q)}”</h3><div class="fsum"><b>${f.yes}</b> of ${f.answered} students (${f.pct.toFixed(0)}%) answered Yes</div>
+    <div class="fgrid">${f.groups.map(g => `<div><h4>By ${esc(g.name.toLowerCase())}</h4>${g.rows.map(r =>
+      `<div class="frow ${r.most ? "most" : ""} ${r.small ? "small" : ""}" data-g="${esc(g.name)}" data-l="${esc(r.label)}" data-y="${r.yes}" data-n="${r.n}" data-p="${r.pct}">
+        <div class="lab">${esc(r.label)}</div><div class="trk"><div class="fil" data-w="${r.pct}"></div><div class="ovl" style="left:${f.pct}%"></div></div>
+        <div class="num">${r.yes} of ${r.n} (${r.pct.toFixed(0)}%)${r.small ? " ·small" : ""}</div></div>`).join("")}</div>`).join("")}</div>`;
+  $("#focusBox").appendChild(card);
+  card.querySelectorAll(".frow").forEach(row => bindTip(row, () =>
+    `<b>${esc(row.dataset.g)}: ${esc(row.dataset.l)}</b><br>${row.dataset.y} of ${row.dataset.n} students answered Yes (${(+row.dataset.p).toFixed(1)}%)<br>Whole school: ${f.pct.toFixed(1)}%` +
+    (+row.dataset.n < 10 ? "<br><i>Small group – interpret with care</i>" : "")));
+});
+requestAnimationFrame(() => document.querySelectorAll(".fil").forEach(el => el.style.width = el.dataset.w + "%"));
 
 /* ---------- KPI cards ---------- */
 $("#kpis").innerHTML = D.kpis.map(k =>

@@ -108,6 +108,23 @@ def focus_groups(cat_cols):
     return picked or list(cat_cols[:3])
 
 
+def focus_data(df, question_col, groups):
+    """Numbers behind the focus pages: for each group column, Yes / answered per group (natural order)."""
+    answered = df[question_col].isin(["Yes", "No"])
+    out = {"yes": int((df[question_col] == "Yes").sum()), "answered": int(answered.sum()), "groups": []}
+    out["pct"] = out["yes"] / max(1, out["answered"]) * 100
+    for g in groups:
+        sub = df[answered & df[g].notna()]
+        tab = sub.groupby(g)[question_col].agg(n="size", yes=lambda s: (s == "Yes").sum())
+        tab = tab[tab["n"] > 0]
+        tab = tab.loc[sorted(tab.index, key=_natural_key)]
+        most = int(tab["yes"].max()) if len(tab) else 0
+        out["groups"].append({"name": g.rstrip(": "), "rows": [
+            {"label": str(k), "n": int(r["n"]), "yes": int(r["yes"]), "pct": float(r["yes"] / r["n"] * 100),
+             "most": bool(r["yes"] == most and most > 0), "small": bool(r["n"] < 10)} for k, r in tab.iterrows()]})
+    return out
+
+
 def focus_figure(df, question_col, label, groups):
     """One panel per group column: % (and number) answering Yes in each group."""
     answered = df[question_col].isin(["Yes", "No"])

@@ -10,7 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from pdf_report import build_pdf
+from pdf_report import build_pdf, focus_data, focus_groups
 from ppt_report import build_pptx
 from html_report import build_html
 from followup import build_followup_xlsx, followup_table, identity_columns
@@ -179,8 +179,8 @@ else:
 st.write("")
 
 # ---------------- Pages (like Power BI report pages) ----------------
-tab_overview, tab_yesno, tab_compare, tab_text, tab_export = st.tabs(
-    ["Overview", "Yes / No results", "Compare groups", "Written reasons", "✏️ Edit & export"])
+tab_overview, tab_yesno, tab_focus, tab_compare, tab_text, tab_export = st.tabs(
+    ["Overview", "Yes / No results", "🔴 Focus", "Compare groups", "Written reasons", "✏️ Edit & export"])
 
 # ---- Overview: donut charts ----
 with tab_overview:
@@ -226,6 +226,47 @@ with tab_yesno:
         st.dataframe(summary.drop(columns="Highlight"), use_container_width=True, hide_index=True,
                      column_config={"% Yes": st.column_config.ProgressColumn(
                          "% Yes", format="%.0f%%", min_value=0, max_value=100)})
+
+# ---- Focus: each red indicator by class, age and sex ----
+with tab_focus:
+    _qs = st.session_state.get("q_settings", {})
+    red_cols = [q for q, h in zip(summary["Question"], summary["Highlight"]) if _qs.get(q, {}).get("red", bool(h))]
+    groups_f = focus_groups(cat_cols)
+    if not red_cols or not groups_f:
+        st.info("No questions are marked with a red bar. Tick **Red bar** in ✏️ Edit & export → section 3.")
+    else:
+        st.caption("Each red indicator broken down by class, age and sex. Bold red = group with the most students "
+                   "answering Yes · faded = fewer than 10 students · dashed line = whole school. No names are shown.")
+    for qi, q in enumerate(red_cols):
+        fd = focus_data(df, q, groups_f)
+        label = _qs.get(q, {}).get("label") or short(q, 300)
+        with st.container(key=f"card_focus_{qi}"):
+            st.markdown(f'<p class="card-title" style="color:{RED}">“{label}”</p>', unsafe_allow_html=True)
+            st.markdown(f"**{fd['yes']}** of {fd['answered']} students (**{fd['pct']:.0f}%**) answered Yes")
+            cols_f = st.columns(len(fd["groups"]))
+            for gi, (col, g) in enumerate(zip(cols_f, fd["groups"])):
+                rows = g["rows"]
+                fig = go.Figure()
+                fig.add_bar(y=[r["label"] for r in rows], x=[100] * len(rows), orientation="h", marker_color=NO_GREY,
+                            hoverinfo="skip", showlegend=False)
+                fig.add_bar(y=[r["label"] for r in rows], x=[r["pct"] for r in rows], orientation="h",
+                            marker_color=[RED if not r["small"] else "#E8A1A8" for r in rows], showlegend=False,
+                            customdata=[[r["yes"], r["n"]] for r in rows],
+                            hovertemplate="%{y}: %{customdata[0]} of %{customdata[1]} (%{x:.0f}%)<extra></extra>")
+                fig.add_vline(x=fd["pct"], line_dash="dash", line_color="#252423")
+                for r in rows:
+                    fig.add_annotation(x=101, y=r["label"], xanchor="left", showarrow=False,
+                                       text=(f"<b>{r['yes']} of {r['n']} ({r['pct']:.0f}%)</b>" if r["most"] else
+                                             f"{r['yes']} of {r['n']} ({r['pct']:.0f}%)"),
+                                       font=dict(size=11, color=RED if r["most"] else
+                                                 ("#A19F9D" if r["small"] else "#252423")))
+                fig.update_layout(barmode="overlay", title=dict(text=f"By {g['name'].lower()}", x=0, font=dict(size=13)))
+                fig.update_xaxes(range=[0, 165], tickvals=[0, 25, 50, 75, 100], ticksuffix="%")
+                fig.update_yaxes(autorange="reversed", type="category")
+                fig = pbi_style(fig, 70 + 34 * len(rows))
+                fig.update_layout(margin=dict(l=10, r=10, t=40, b=10))
+                col.plotly_chart(fig, use_container_width=True, key=f"focus_{qi}_{gi}")
+        st.write("")
 
 # ---- Compare groups: clustered bars ----
 group, chosen = None, []
